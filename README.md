@@ -1,7 +1,8 @@
 # FastAPI Library System
 
 A simple library management system built with **FastAPI**.
-All data is stored in memory (a Python list inside the code) — no database is used.
+Books are stored in a **PostgreSQL** database.
+(In the first version the data was just a Python list inside the code. Now it lives in a real database.)
 
 ## Features
 
@@ -35,6 +36,25 @@ All data is stored in memory (a Python list inside the code) — no database is 
   "author": "Robert C. Martin",
   "publisher": "Prentice Hall"
 }
+```
+
+## Database Setup
+
+The app needs a PostgreSQL database running on localhost.
+The connection settings are at the top of `main.py` (`DB_CONFIG`).
+
+1. Install PostgreSQL
+2. Create the database and the books table:
+
+```sql
+CREATE DATABASE library_db;
+
+CREATE TABLE books (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL,
+    publisher TEXT NOT NULL
+);
 ```
 
 ## Installation
@@ -93,3 +113,4 @@ curl -X DELETE http://127.0.0.1:8000/books/1
 - Python
 - FastAPI
 - Uvicorn
+- PostgreSQL (with psycopg)

@@ -1,21 +1,25 @@
+import psycopg
+from psycopg.rows import dict_row
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
+# postgres connection settings
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "library_db",
+    "user": "postgres",
+    "password": "postgres",
+}
+
 app = FastAPI()
 
-# -----------------------
-# Sample data (In-memory database)
-# -----------------------
-
-books = [
-    {"id": 1, "title": "Clean Code", "author": "Robert C. Martin", "publisher": "Prentice Hall"},
-    {"id": 2, "title": "The Pragmatic Programmer", "author": "Andrew Hunt", "publisher": "Addison-Wesley"},
-    {"id": 3, "title": "Python Crash Course", "author": "Eric Matthes", "publisher": "No Starch Press"},
-    {"id": 4, "title": "Deep Work", "author": "Cal Newport", "publisher": "Grand Central Publishing"},
-    {"id": 5, "title": "Atomic Habits", "author": "James Clear", "publisher": "Avery"},
-]
-
 REQUIRED_FIELDS = ("title", "author", "publisher")
+
+
+def get_connection():
+    # open a new connection for each request, it closes when the block ends
+    return psycopg.connect(**DB_CONFIG, row_factory=dict_row)
 
 
 @app.get("/hello/{name}")
@@ -29,40 +33,52 @@ async def hello_query(name: str = "world"):
 
 
 # -----------------------
-# Books endpoints
+# Books endpoints (data is stored in postgres now)
 # -----------------------
 
 @app.get("/books")
-async def list_books(query: str | None = None):
+def list_books(query: str | None = None):
     if query is None:
-        return {"count": len(books), "results": books}
+        sql = "SELECT id, title, author, publisher FROM books ORDER BY id"
+        params = ()
+    else:
+        sql = (
+            "SELECT id, title, author, publisher FROM books "
+            "WHERE title ILIKE %s OR author ILIKE %s OR publisher ILIKE %s "
+            "ORDER BY id"
+        )
+        params = (f"%{query}%", f"%{query}%", f"%{query}%")
 
-    query_lower = query.lower()
+    with get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
 
-    filtered_books = [
-        book for book in books
-        if query_lower in book["title"].lower()
-        or query_lower in book["author"].lower()
-        or query_lower in book["publisher"].lower()
-    ]
+    results = list(rows)
+
+    if query is None:
+        return {"count": len(results), "results": results}
 
     return {
         "query": query,
-        "results_count": len(filtered_books),
-        "results": filtered_books
+        "results_count": len(results),
+        "results": results
     }
 
 
 @app.get("/books/{book_id}")
-async def get_book(book_id: int):
-    for book in books:
-        if book["id"] == book_id:
-            return book
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+def get_book(book_id: int):
+    with get_connection() as conn:
+        book = conn.execute(
+            "SELECT id, title, author, publisher FROM books WHERE id = %s",
+            (book_id,),
+        ).fetchone()
+
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    return book
 
 
 @app.post("/books", status_code=status.HTTP_201_CREATED)
-async def create_book(payload: dict):
+def create_book(payload: dict):
     missing = [field for field in REQUIRED_FIELDS if field not in payload]
     if missing:
         raise HTTPException(
@@ -70,34 +86,54 @@ async def create_book(payload: dict):
             detail=f"Missing required fields: {', '.join(missing)}"
         )
 
-    new_book = {
-        "id": max(book["id"] for book in books) + 1,
-        "title": payload["title"],
-        "author": payload["author"],
-        "publisher": payload["publisher"],
-    }
-    books.append(new_book)
-    return new_book
+    with get_connection() as conn:
+        book = conn.execute(
+            "INSERT INTO books (title, author, publisher) "
+            "VALUES (%s, %s, %s) "
+            "RETURNING id, title, author, publisher",
+            (payload["title"], payload["author"], payload["publisher"]),
+        ).fetchone()
+        conn.commit()
+
+    return book
 
 
 @app.patch("/books/{book_id}")
-async def update_book(book_id: int, payload: dict):
-    for book in books:
-        if book["id"] == book_id:
-            for field in REQUIRED_FIELDS:
-                if field in payload:
-                    book[field] = payload[field]
-            return book
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+def update_book(book_id: int, payload: dict):
+    fields = {field: payload[field] for field in REQUIRED_FIELDS if field in payload}
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid field to update"
+        )
+
+    # field names come from the fixed REQUIRED_FIELDS list, values go as %s params
+    set_sql = ", ".join(f"{field} = %s" for field in fields)
+
+    with get_connection() as conn:
+        book = conn.execute(
+            f"UPDATE books SET {set_sql} WHERE id = %s "
+            "RETURNING id, title, author, publisher",
+            [*fields.values(), book_id],
+        ).fetchone()
+        conn.commit()
+
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    return book
 
 
 @app.delete("/books/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_book(book_id: int):
-    for index, book in enumerate(books):
-        if book["id"] == book_id:
-            books.pop(index)
-            return
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+def delete_book(book_id: int):
+    with get_connection() as conn:
+        deleted = conn.execute(
+            "DELETE FROM books WHERE id = %s RETURNING id",
+            (book_id,),
+        ).fetchone()
+        conn.commit()
+
+    if deleted is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
 
 # -----------------------
