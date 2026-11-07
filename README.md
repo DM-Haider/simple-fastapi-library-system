@@ -60,7 +60,7 @@ CREATE TABLE books (
 ## Installation
 
 ```bash
-git clone https://github.com/DM-Haider/fastapi-library-system.git
+git clone https://github.com/DM-Haider/simple-fastapi-library-system.git
 cd fastapi-library-system
 python -m venv venv
 venv\Scripts\activate
